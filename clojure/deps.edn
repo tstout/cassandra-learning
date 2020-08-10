@@ -1,0 +1,6 @@
+{:paths ["resources" "src"]
+ :deps {org.clojure/tools.cli {:mvn/version "0.3.5"}
+        cc.qbits/hayt {:mvn/version "4.1.0"}
+        cc.qbits/alia-async {:mvn/version "4.3.3"}
+        cc.qbits/alia {:mvn/version "4.3.3"}
+        org.clojure/core.async {:mvn/version "1.3.610"}}}
