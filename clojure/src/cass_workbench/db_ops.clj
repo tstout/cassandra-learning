@@ -1,6 +1,6 @@
 (ns cass-workbench.db-ops
   (:require
-   [clojure.core.async :refer [<!!] :as a]
+   [clojure.core.async :refer [<!! chan to-chan pipeline-blocking] :as a]
    [cass-workbench.config :refer [session]]
    [qbits.alia :as alia]
    [qbits.alia.async :as alia_a]))
@@ -29,7 +29,7 @@
     (alia/execute session insert-stmt {:values [request-id message-id status delivery-response]})))
 
 (defn next-state []
-  (let [states ["PENDING" "DISPATCHED" "COMPLETE"]
+  (let [states ["PENDING" "DISPATCHED" "COMPLETE" "ERROR"]
         coll (cycle states)
         n (atom -1)]
     (fn []
@@ -72,21 +72,73 @@
   "Generate num-rows messages for a simulated request.
    Returns the new required-id. 
    Note: this is really slow, revisit to improve performance."
+  ([num-rows]
+   (let [request-id (uuid)
+         status (next-state)]
+     (populate-db num-rows request-id status)))
+  
+  ([num-rows request-id status]
+   ;;(prn (str "UUID is " request-id))
+   (dotimes [_ num-rows]
+      ;;(prn (str "inserting..." n))
+     (write-msg-row
+      {:request-id request-id
+       :message-id (uuid)
+       :status (status)
+       :delivery-response (rand-str 128)}))
+   request-id))
+
+(defn blocking-db-operation [arg]
+  (let [[request-id status] arg]
+    (populate-db 1 request-id status)))
+  
+(defn populate-db-p 
+  "Populate rows in parallel. Parallel processing is needed to insert million(s) of rows
+   in a reasonable amount of time."
   [num-rows]
   (let [request-id (uuid)
-        status (next-state)]
-    (prn (str "UUID is " request-id))
-    (dotimes [_ num-rows]
-      ;;(prn (str "inserting..." n))
-      (write-msg-row
-       {:request-id request-id
-        :message-id (uuid)
-        :status (status)
-        :delivery-response (rand-str 128)}))
-    request-id))
+        input-coll (repeat num-rows [request-id (next-state)])
+        output-chan (chan)]
+    (pipeline-blocking 10  ;; concurrency level
+                       output-chan
+                       (map blocking-db-operation)
+                       (to-chan input-coll))
+    (loop []
+      (if-let [_ (<!! output-chan)]
+        (recur)
+        request-id))))
+
+;; (let [concurrent 10
+;;       output-chan (chan)
+;;       input-coll (range 0 10)]
+;;   (pipeline-blocking concurrent
+;;                      output-chan
+;;                      (map blocking-operation)
+;;                      (to-chan input-coll))
+;;   (<!! (a/into [] output-chan)))
+
+;; (let [concurrent 10
+;;       output-chan (chan)
+;;       input-coll (range 0 10)]
+;;   (pipeline-blocking concurrent
+;;                      output-chan
+;;                      (map blocking-operation)
+;;                      (to-chan input-coll))
+;;   (<!! output-chan))
 
 
 (comment
+
+  
+  (populate-db-p 1000000)
+  
+  (repeat 2 [(uuid) (next-state)])
+  (reduce (fn [_ c] c) [1 2 3])
+  
+  (populate-db 1 (uuid) (next-state))
+  
+  
+  (str (Thread/currentThread))
 
   (populate-db 1000000)
 
