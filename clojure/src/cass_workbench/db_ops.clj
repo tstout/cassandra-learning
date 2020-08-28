@@ -1,6 +1,6 @@
 (ns cass-workbench.db-ops
   (:require
-   [clojure.core.async :refer [<!! chan to-chan pipeline-blocking] :as a]
+   [clojure.core.async :refer [<!! <! chan to-chan go-loop pipeline-blocking] :as a]
    [cass-workbench.config :refer [session]]
    [qbits.alia :as alia]
    [qbits.alia.async :as alia_a]))
@@ -89,46 +89,34 @@
    request-id))
 
 (defn blocking-db-operation [arg]
-  (let [[request-id status] arg]
-    (populate-db 1 request-id status)))
+  (let [[request-id status status-counter] arg]
+    (populate-db 1 request-id status)
+    (swap! status-counter assoc :row-cnt (inc (:row-cnt @status-counter)))))
   
 (defn populate-db-p 
   "Populate rows in parallel. Parallel processing is needed to insert million(s) of rows
-   in a reasonable amount of time."
+   in a reasonable amount of time.
+   Returns an atom of {:row-cnt :finished :request-id} allowing polling of status."
   [num-rows]
   (let [request-id (uuid)
-        input-coll (repeat num-rows [request-id (next-state)])
+        status-counter (atom {:row-cnt 0 :finished false :request-id request-id})
+        input-coll (repeat num-rows [request-id (next-state) status-counter])
         output-chan (chan)]
-    (pipeline-blocking 10  ;; concurrency level
+    (pipeline-blocking 8  ;; concurrency level
                        output-chan
                        (map blocking-db-operation)
                        (to-chan input-coll))
-    (loop []
-      (if-let [_ (<!! output-chan)]
+    (go-loop []
+      (if (<! output-chan)
         (recur)
-        request-id))))
-
-;; (let [concurrent 10
-;;       output-chan (chan)
-;;       input-coll (range 0 10)]
-;;   (pipeline-blocking concurrent
-;;                      output-chan
-;;                      (map blocking-operation)
-;;                      (to-chan input-coll))
-;;   (<!! (a/into [] output-chan)))
-
-;; (let [concurrent 10
-;;       output-chan (chan)
-;;       input-coll (range 0 10)]
-;;   (pipeline-blocking concurrent
-;;                      output-chan
-;;                      (map blocking-operation)
-;;                      (to-chan input-coll))
-;;   (<!! output-chan))
-
+        (swap! status-counter assoc :finished true)))
+    status-counter))
 
 (comment
 
+  (def status (populate-db-p 100000))
+  
+  @status
   
   (populate-db-p 1000000)
   
@@ -137,6 +125,7 @@
   
   (populate-db 1 (uuid) (next-state))
   
+  (-> Runtime/getRuntime )
   
   (str (Thread/currentThread))
 
