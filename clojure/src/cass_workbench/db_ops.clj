@@ -1,6 +1,6 @@
 (ns cass-workbench.db-ops
   (:require
-   [clojure.core.async :refer [<!!] :as a]
+   [clojure.core.async :refer [<!! <! chan to-chan go-loop pipeline-blocking] :as a]
    [cass-workbench.config :refer [session]]
    [qbits.alia :as alia]
    [qbits.alia.async :as alia_a]))
@@ -29,7 +29,7 @@
     (alia/execute session insert-stmt {:values [request-id message-id status delivery-response]})))
 
 (defn next-state []
-  (let [states ["PENDING" "DISPATCHED" "COMPLETE"]
+  (let [states ["PENDING" "DISPATCHED" "COMPLETE" "ERROR"]
         coll (cycle states)
         n (atom -1)]
     (fn []
@@ -72,21 +72,62 @@
   "Generate num-rows messages for a simulated request.
    Returns the new required-id. 
    Note: this is really slow, revisit to improve performance."
+  ([num-rows]
+   (let [request-id (uuid)
+         status (next-state)]
+     (populate-db num-rows request-id status)))
+  
+  ([num-rows request-id status]
+   ;;(prn (str "UUID is " request-id))
+   (dotimes [_ num-rows]
+      ;;(prn (str "inserting..." n))
+     (write-msg-row
+      {:request-id request-id
+       :message-id (uuid)
+       :status (status)
+       :delivery-response (rand-str 128)}))
+   request-id))
+
+(defn blocking-db-operation [arg]
+  (let [[request-id status status-counter] arg]
+    (populate-db 1 request-id status)
+    (swap! status-counter assoc :row-cnt (inc (:row-cnt @status-counter)))))
+  
+(defn populate-db-p 
+  "Populate rows in parallel. Parallel processing is needed to insert million(s) of rows
+   in a reasonable amount of time.
+   Returns an atom of {:row-cnt :finished :request-id} allowing polling of status."
   [num-rows]
   (let [request-id (uuid)
-        status (next-state)]
-    (prn (str "UUID is " request-id))
-    (dotimes [_ num-rows]
-      ;;(prn (str "inserting..." n))
-      (write-msg-row
-       {:request-id request-id
-        :message-id (uuid)
-        :status (status)
-        :delivery-response (rand-str 128)}))
-    request-id))
-
+        status-counter (atom {:row-cnt 0 :finished false :request-id request-id})
+        input-coll (repeat num-rows [request-id (next-state) status-counter])
+        output-chan (chan)]
+    (pipeline-blocking 8  ;; concurrency level
+                       output-chan
+                       (map blocking-db-operation)
+                       (to-chan input-coll))
+    (go-loop []
+      (if (<! output-chan)
+        (recur)
+        (swap! status-counter assoc :finished true)))
+    status-counter))
 
 (comment
+
+  (def status (populate-db-p 100000))
+  
+  @status
+  
+  (populate-db-p 1000000)
+  
+  (repeat 2 [(uuid) (next-state)])
+  (reduce (fn [_ c] c) [1 2 3])
+  
+  (populate-db 1 (uuid) (next-state))
+  
+  (-> Runtime/getRuntime )
+  
+  (str (Thread/currentThread))
 
   (populate-db 1000000)
 
